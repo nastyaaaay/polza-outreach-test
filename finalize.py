@@ -1,0 +1,87 @@
+"""
+Собирает финальный output/leads_final.csv из output/leads.csv:
+  - убирает строки без сайта (не удалось найти компанию — не подставляем
+    выдуманные данные, просто пропускаем);
+  - убирает дубли по названию (компания могла попасть в оба прохода —
+    поиск через DuckDuckGo и fallback через 2ГИС);
+  - убирает единственный обнаруженный "мусорный" email (служебный
+    трекинг-адрес ВКонтакте на групповой странице, не реальный контакт);
+  - убирает уточняющие слова, которые добавлялись в companies_seed.py/
+    known_domains.py только для точности поиска (например,
+    "Qsoft разработка сайтов" -> "Qsoft").
+"""
+
+import csv
+from pathlib import Path
+
+SRC = Path("output/leads.csv")
+DST = Path("output/leads_final.csv")
+
+# Уточняющие суффиксы для поиска -> чистое название компании
+RENAME = {
+    "Depot Branding Agency": "Depot",
+    "MGcom рекламное агентство": "MGcom",
+    "Родная речь рекламное агентство": "Родная речь",
+    "Schmidt Schmidt": "Schmidt Export",
+    "Walnut team агентство": "Walnut Team",
+    "Rocket media агентство": "Rocket Media",
+    "Макс медиа маркетинговое агентство": "Макс медиа",
+    "Osminog project автоматизация 1С": "Osminog Project",
+    "hubes агентство": "Hubes",
+    "Игроник агентство": "Игроник",
+    "ПроКонтекст агентство": "ПроКонтекст",
+    "Brandmaker Киров": "Brandmaker",
+    "Premium-lift рекламная компания": "Premium-lift",
+    "Джейкет сервис объявлений": "Джейкет",
+    "Victory group маркетинг": "Victory Group",
+    "БТЛ Сервис агентство": "БТЛ Сервис",
+    "Глобал артс агентство": "Глобал Артс",
+    "Тарантул агентство маркетинг": "Тарантул",
+    "Социо про исследования": "Социо Про",
+    "Servizoria компания": "Servizoria",
+    "Litera.Studio графический дизайн": "Litera.Studio",
+    "Pragmatix digital SEO": "Pragmatix Digital",
+    "Findby SEO продвижение": "Findby",
+    "Аудитория агентство Москва": "Аудитория",
+    "Упаковщик агентство маркетинг": "Упаковщик",
+    "Домовой и Партнеры агентство": "Домовой и Партнеры",
+    "DigitalWill агентство": "DigitalWill",
+    "Agency-5 агентство": "Agency-5",
+    "ArrivoMedia агентство": "ArrivoMedia",
+    "Kochev агентство": "Kochev Marketing",
+    "Ony агентство Москва": "Ony",
+    "Agima интерактивное агентство": "Agima",
+    "inSales платформа онлайн-торговли": "inSales",
+    "БТВ-Инфо IT-компания": "БТВ-Инфо",
+    "Qsoft разработка сайтов": "Qsoft",
+}
+
+
+def main():
+    seen = set()
+    rows = []
+    with open(SRC, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            name = RENAME.get(row["name"].strip(), row["name"].strip())
+            if not row["website"] or name in seen:
+                continue
+            seen.add(name)
+            if row["email"] and "vk-portal.net" in row["email"]:
+                row["email"] = ""
+            row["name"] = name
+            rows.append(row)
+
+    with open(DST, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["name", "website", "email", "personalization", "personalization_source"]
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"final rows: {len(rows)}")
+    print(f"with email: {sum(1 for r in rows if r['email'])}")
+    print(f"with personalization: {sum(1 for r in rows if r['personalization'])}")
+
+
+if __name__ == "__main__":
+    main()
