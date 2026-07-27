@@ -158,15 +158,51 @@ def _is_plausible_email(email: str) -> bool:
     return True
 
 
+# Локальные части адреса, которые предпочитаем при выборе из нескольких
+# кандидатов на одном домене — реальные точки входа для коммерческого
+# письма, в порядке убывания приоритета.
+_LOCAL_PART_PRIORITY = ("sales", "hello", "info", "office", "reception")
+
+# Локальные части, которые почти никогда не ведут к человеку, способному
+# ответить на холодное письмо (бухгалтерия, персданные, HR, тендеры) —
+# такой адрес не выбираем, даже если это единственный кандидат на домене.
+_LOCAL_PART_BLACKLIST = (
+    "buh", "accounting", "hr", "job", "vacan",
+    "pdn", "privacy", "concurs", "tender", "legal",
+)
+
+
+def _same_domain(email_domain: str, company_domain: str) -> bool:
+    """Строгое сравнение доменов: не по вхождению подстроки (иначе
+    anthony@partner.com ложно матчится с доменом ony.ru — воспроизведено
+    на реальных данных), а по полному совпадению домена или его поддомена."""
+    email_domain = email_domain.lower().removeprefix("www.")
+    company_domain = company_domain.lower().removeprefix("www.")
+    return bool(company_domain) and (
+        email_domain == company_domain or email_domain.endswith("." + company_domain)
+    )
+
+
+def _email_rank(email: str) -> tuple[int, int]:
+    """Чем меньше — тем выше приоритет при выборе из нескольких адресов."""
+    local = email.split("@", 1)[0].lower()
+    if any(bad in local for bad in _LOCAL_PART_BLACKLIST):
+        return (2, 0)
+    for rank, prefix in enumerate(_LOCAL_PART_PRIORITY):
+        if local.startswith(prefix):
+            return (0, rank)
+    return (1, 0)
+
+
 def extract_email(html_text: str, domain: str) -> str | None:
     candidates = {e for e in EMAIL_RE.findall(html_text) if _is_plausible_email(e)}
     if not candidates:
         return None
     # Предпочитаем адрес на домене самой компании — реже ловим email
     # виджетов аналитики/чужих сервисов, случайно попавших в код страницы.
-    domain_matches = [e for e in candidates if domain.split(".")[-2] in e.lower()]
+    domain_matches = [e for e in candidates if _same_domain(e.rsplit("@", 1)[-1], domain)]
     pool = domain_matches or list(candidates)
-    return sorted(pool)[0]
+    return sorted(pool, key=lambda e: (*_email_rank(e), e))[0]
 
 
 def extract_context_text(html_text: str) -> str:
