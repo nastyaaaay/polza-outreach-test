@@ -105,7 +105,7 @@ def build_placeholders(contact_name: str, personalization: str) -> dict:
             "{{приветствие}}": privet,
             "{{вступление_2}}": vstuplenie_2,
             "{{вступление_3}}": vstuplenie_3,
-            "{{персонализация_блок}}": personalizatsiya_blok,
+            "{{персонализация}}": personalizatsiya_blok,
             "{{подпись}}": "",
         },
         "used_name_fallback": not name,
