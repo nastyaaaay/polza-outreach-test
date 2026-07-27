@@ -20,7 +20,7 @@ from collect_leads import (
 from known_domains import KNOWN_DOMAINS
 
 
-def process_known(client: httpx.Client, name: str, website: str) -> dict:
+def process_known(client: httpx.Client, name: str, website: str, stats: dict | None = None) -> dict:
     row = {
         "name": name,
         "website": website,
@@ -50,24 +50,35 @@ def process_known(client: httpx.Client, name: str, website: str) -> dict:
 
     row["email"] = email or ""
     row["personalization_source"] = source_url if context else ""
-    row["personalization"] = generate_personalization(client, name, context)
+    row["personalization"] = generate_personalization(client, name, context, stats)
     return row
 
 
 def main():
     fieldnames = ["name", "website", "email", "personalization", "personalization_source"]
     items = list(KNOWN_DOMAINS.items())
+    stats = {"llm_failures": 0}
 
     with open(OUTPUT_PATH, "a", newline="", encoding="utf-8") as f, httpx.Client() as client:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
 
         for i, (name, website) in enumerate(items, start=1):
             print(f"[{i}/{len(items)}] {name} ...", end=" ", flush=True)
-            row = process_known(client, name, website)
+            failures_before = stats["llm_failures"]
+            row = process_known(client, name, website, stats)
             writer.writerow(row)
             f.flush()
-            print("OK" if row["email"] or row["personalization"] else "частично")
+            if stats["llm_failures"] > failures_before:
+                print("LLM недоступна — без персонализации")
+            else:
+                print("OK" if row["email"] or row["personalization"] else "частично")
             time.sleep(0.5)
+
+    if stats["llm_failures"]:
+        print(
+            f"\n{stats['llm_failures']} из {len(items)} строк — без "
+            "персонализации из-за ошибки LLM"
+        )
 
 
 if __name__ == "__main__":

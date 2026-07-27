@@ -22,6 +22,7 @@ collect_leads.py — сбор B2B-базы + персонализация.
 """
 
 import csv
+import os
 import re
 import time
 from pathlib import Path
@@ -32,7 +33,10 @@ from bs4 import BeautifulSoup
 
 from companies_seed import COMPANY_NAMES
 
-OLLAMA_URL = "http://192.168.1.202:11434/api/chat"
+# Дефолт — localhost, а не домашний IP разработчика: у проверяющего свой
+# Ollama (если есть) слушает локально. Переопределяется через переменную
+# окружения OLLAMA_URL, если сервер поднят на другом адресе.
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = "gpt-oss:20b"
 
 HEADERS = {
@@ -226,7 +230,14 @@ def extract_context_text(html_text: str) -> str:
     return " ".join(parts)[:800]
 
 
-def generate_personalization(client: httpx.Client, company: str, context: str) -> str:
+def generate_personalization(
+    client: httpx.Client, company: str, context: str, stats: dict | None = None
+) -> str:
+    """Пустая строка означает две разные вещи, которые нельзя путать:
+    честное "на сайте нет фактов" (context пуст) и "LLM недоступна/упала"
+    (запрос не прошёл). Второй случай молча портит прогон — прошлая версия
+    писала "OK" даже когда персонализация не сгенерировалась. Поэтому здесь
+    отказ LLM считается в stats, а main() печатает итоговую сводку."""
     if not context.strip():
         return ""
 
@@ -259,10 +270,12 @@ def generate_personalization(client: httpx.Client, company: str, context: str) -
         resp.raise_for_status()
         return resp.json()["message"]["content"].strip()
     except (httpx.HTTPError, KeyError):
+        if stats is not None:
+            stats["llm_failures"] += 1
         return ""
 
 
-def process_company(client: httpx.Client, name: str) -> dict:
+def process_company(client: httpx.Client, name: str, stats: dict | None = None) -> dict:
     row = {
         "name": name,
         "website": "",
@@ -298,7 +311,7 @@ def process_company(client: httpx.Client, name: str) -> dict:
 
     row["email"] = email or ""
     row["personalization_source"] = source_url if context else ""
-    row["personalization"] = generate_personalization(client, name, context)
+    row["personalization"] = generate_personalization(client, name, context, stats)
 
     return row
 
@@ -306,6 +319,7 @@ def process_company(client: httpx.Client, name: str) -> dict:
 def main():
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
     fieldnames = ["name", "website", "email", "personalization", "personalization_source"]
+    stats = {"llm_failures": 0}
 
     with open(OUTPUT_PATH, "w", newline="", encoding="utf-8") as f, httpx.Client() as client:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -313,11 +327,24 @@ def main():
 
         for i, name in enumerate(COMPANY_NAMES, start=1):
             print(f"[{i}/{len(COMPANY_NAMES)}] {name} ...", end=" ", flush=True)
-            row = process_company(client, name)
+            failures_before = stats["llm_failures"]
+            row = process_company(client, name, stats)
             writer.writerow(row)
             f.flush()
-            print("OK" if row["website"] else "сайт не найден")
+            if not row["website"]:
+                print("сайт не найден")
+            elif stats["llm_failures"] > failures_before:
+                print("сайт найден, но LLM недоступна — без персонализации")
+            else:
+                print("OK")
             time.sleep(1.5)  # не долбим DuckDuckGo слишком часто
+
+    if stats["llm_failures"]:
+        print(
+            f"\n{stats['llm_failures']} из {len(COMPANY_NAMES)} строк — без "
+            "персонализации из-за ошибки LLM (не путать с честным "
+            "'недостаточно данных' — это отказ запроса)"
+        )
 
 
 if __name__ == "__main__":
