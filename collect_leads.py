@@ -230,28 +230,18 @@ def extract_context_text(html_text: str) -> str:
     return " ".join(parts)[:800]
 
 
-def generate_personalization(
-    client: httpx.Client, company: str, context: str, stats: dict | None = None
+def ask_llm(
+    client: httpx.Client,
+    system_prompt: str,
+    user_prompt: str,
+    stats: dict | None = None,
+    timeout: int = 60,
 ) -> str:
     """Пустая строка означает две разные вещи, которые нельзя путать:
-    честное "на сайте нет фактов" (context пуст) и "LLM недоступна/упала"
-    (запрос не прошёл). Второй случай молча портит прогон — прошлая версия
-    писала "OK" даже когда персонализация не сгенерировалась. Поэтому здесь
-    отказ LLM считается в stats, а main() печатает итоговую сводку."""
-    if not context.strip():
-        return ""
-
-    system_prompt = (
-        "Ты помогаешь составить персонализацию для холодного B2B-письма. "
-        "На основе присланного реального текста с сайта компании напиши "
-        "1-2 коротких предложения на русском языке — конкретный факт о "
-        "компании, который можно использовать как персональный крючок в "
-        "письме. Не выдумывай ничего, чего нет в тексте. Если в тексте "
-        "нет ничего конкретного, кроме общих слов — так и напиши: "
-        "'недостаточно данных для персонализации'."
-    )
-    user_prompt = f"Компания: {company}\n\nТекст с сайта:\n{context}"
-
+    честное "в тексте этого нет" и "LLM недоступна/упала" (запрос не
+    прошёл). Второй случай молча портит прогон — прошлая версия писала
+    "OK" даже когда персонализация не сгенерировалась. Поэтому здесь отказ
+    LLM считается в stats, а main() печатает итоговую сводку."""
     try:
         resp = client.post(
             OLLAMA_URL,
@@ -265,7 +255,7 @@ def generate_personalization(
                 "options": {"temperature": 0.3},
                 "stream": False,
             },
-            timeout=60,
+            timeout=timeout,
         )
         resp.raise_for_status()
         return resp.json()["message"]["content"].strip()
@@ -275,10 +265,64 @@ def generate_personalization(
         return ""
 
 
+def generate_personalization(
+    client: httpx.Client, company: str, context: str, stats: dict | None = None
+) -> str:
+    if not context.strip():
+        return ""
+
+    system_prompt = (
+        "Ты помогаешь составить персонализацию для холодного B2B-письма. "
+        "На основе присланного реального текста с сайта компании напиши "
+        "1-2 коротких предложения на русском языке — конкретный факт о "
+        "компании, который можно использовать как персональный крючок в "
+        "письме. Не выдумывай ничего, чего нет в тексте. Если в тексте "
+        "нет ничего конкретного, кроме общих слов — так и напиши: "
+        "'недостаточно данных для персонализации'."
+    )
+    user_prompt = f"Компания: {company}\n\nТекст с сайта:\n{context}"
+    return ask_llm(client, system_prompt, user_prompt, stats)
+
+
+def extract_contact_name(client: httpx.Client, html_text: str, stats: dict | None = None) -> str:
+    """Имя человека, к которому можно обратиться в письме, а не название
+    компании. ТЗ требует колонку "имя" в базе, и цепочка писем обращается
+    "{{имя}}" — без этой колонки шаблон физически не с чем смёржить.
+
+    Ищем только явно подписанное имя (директор, менеджер, контактное лицо)
+    на странице "Контакты"/"О компании"/"Команда". Модели запрещено гадать:
+    для большинства российских агентств такого имени на сайте просто нет,
+    и пустая строка здесь честнее выдуманного "Иван"."""
+    text = extract_context_text(html_text)
+    if not text.strip():
+        return ""
+
+    system_prompt = (
+        "На странице сайта компании иногда указано имя конкретного "
+        "человека (директор, менеджер по продажам, контактное лицо). "
+        "Ответь строго одной строкой:\n"
+        "ИМЯ: <имя> или ИМЯ: нет\n"
+        "Пиши 'нет', если на странице нет явно подписанного имени "
+        "реального человека. Не выдумывай и не бери название компании, "
+        "бренда или домена за имя человека."
+    )
+    user_prompt = f"Текст страницы:\n{text[:1200]}"
+    answer = ask_llm(client, system_prompt, user_prompt, stats)
+
+    m = re.search(r"ИМЯ:\s*(.+)", answer)
+    if not m:
+        return ""
+    name = m.group(1).strip().strip(".\"'")
+    if not name or re.match(r"(нет|no|none|неизвест)", name, re.IGNORECASE):
+        return ""
+    return name[:40]
+
+
 def process_company(client: httpx.Client, name: str, stats: dict | None = None) -> dict:
     row = {
         "name": name,
         "website": "",
+        "contact_name": "",
         "email": "",
         "personalization": "",
         "personalization_source": "",
@@ -299,17 +343,24 @@ def process_company(client: httpx.Client, name: str, stats: dict | None = None) 
     context = extract_context_text(home_html)
     source_url = website
 
+    # Фетчим страницу контактов не только для email/контекста, но и для
+    # имени: чаще всего конкретное имя (не название компании) встречается
+    # именно там, а не на главной.
     contact_url = find_contact_page(website, home_html)
-    if contact_url and (not email or not context):
-        contact_html = fetch(client, contact_url)
-        if contact_html:
-            if not email:
-                email = extract_email(contact_html, domain)
-            if not context:
-                context = extract_context_text(contact_html)
-                source_url = contact_url
+    contact_html = fetch(client, contact_url) if contact_url else None
+    if contact_html:
+        if not email:
+            email = extract_email(contact_html, domain)
+        if not context:
+            context = extract_context_text(contact_html)
+            source_url = contact_url
+
+    contact_name = extract_contact_name(client, contact_html, stats) if contact_html else ""
+    if not contact_name:
+        contact_name = extract_contact_name(client, home_html, stats)
 
     row["email"] = email or ""
+    row["contact_name"] = contact_name
     row["personalization_source"] = source_url if context else ""
     row["personalization"] = generate_personalization(client, name, context, stats)
 
@@ -318,7 +369,10 @@ def process_company(client: httpx.Client, name: str, stats: dict | None = None) 
 
 def main():
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
-    fieldnames = ["name", "website", "email", "personalization", "personalization_source"]
+    fieldnames = [
+        "name", "website", "contact_name", "email",
+        "personalization", "personalization_source",
+    ]
     stats = {"llm_failures": 0}
 
     with open(OUTPUT_PATH, "w", newline="", encoding="utf-8") as f, httpx.Client() as client:

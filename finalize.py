@@ -73,12 +73,17 @@ def main():
 
     with open(DST, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["name", "website", "email", "personalization", "personalization_source"]
+            f,
+            fieldnames=[
+                "name", "website", "contact_name", "email",
+                "personalization", "personalization_source",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)
 
     print(f"final rows: {len(rows)}")
+    print(f"with contact name: {sum(1 for r in rows if r.get('contact_name'))}")
     print(f"with email: {sum(1 for r in rows if r['email'])}")
     print(f"with personalization: {sum(1 for r in rows if r['personalization'])}")
 

@@ -12,6 +12,7 @@ import httpx
 from collect_leads import (
     OUTPUT_PATH,
     extract_context_text,
+    extract_contact_name,
     extract_email,
     fetch,
     find_contact_page,
@@ -24,6 +25,7 @@ def process_known(client: httpx.Client, name: str, website: str, stats: dict | N
     row = {
         "name": name,
         "website": website,
+        "contact_name": "",
         "email": "",
         "personalization": "",
         "personalization_source": "",
@@ -39,23 +41,30 @@ def process_known(client: httpx.Client, name: str, website: str, stats: dict | N
     source_url = website
 
     contact_url = find_contact_page(website, home_html)
-    if contact_url and (not email or not context):
-        contact_html = fetch(client, contact_url)
-        if contact_html:
-            if not email:
-                email = extract_email(contact_html, domain)
-            if not context:
-                context = extract_context_text(contact_html)
-                source_url = contact_url
+    contact_html = fetch(client, contact_url) if contact_url else None
+    if contact_html:
+        if not email:
+            email = extract_email(contact_html, domain)
+        if not context:
+            context = extract_context_text(contact_html)
+            source_url = contact_url
+
+    contact_name = extract_contact_name(client, contact_html, stats) if contact_html else ""
+    if not contact_name:
+        contact_name = extract_contact_name(client, home_html, stats)
 
     row["email"] = email or ""
+    row["contact_name"] = contact_name
     row["personalization_source"] = source_url if context else ""
     row["personalization"] = generate_personalization(client, name, context, stats)
     return row
 
 
 def main():
-    fieldnames = ["name", "website", "email", "personalization", "personalization_source"]
+    fieldnames = [
+        "name", "website", "contact_name", "email",
+        "personalization", "personalization_source",
+    ]
     items = list(KNOWN_DOMAINS.items())
     stats = {"llm_failures": 0}
 
