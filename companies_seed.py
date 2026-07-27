@@ -61,4 +61,13 @@ COMPANY_NAMES = [
     "ArrivoMedia агентство",
     "Kochev агентство",
     "Ony агентство Москва",
+    # Добор до запаса над минимумом ТЗ (см. комментарий в known_domains.py).
+    "Ingate",
+    "Ашманов и партнёры",
+    "Nimax",
+    "Molinos",
+    "Adventum",
+    "iConText",
+    "Registratura",
+    "SETTERS",
 ]

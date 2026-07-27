@@ -246,7 +246,13 @@ def _email_rank(email: str) -> tuple[int, int]:
 
 
 def extract_email(html_text: str, domain: str) -> str | None:
-    candidates = {e for e in EMAIL_RE.findall(html_text) if _is_plausible_email(e)}
+    # Приводим к нижнему регистру сразу: часть сайтов пишет адрес капсом
+    # (ingate.ru отдаёт "INFO@INGATE.RU"), и без нормализации один и тот же
+    # ящик выглядел бы в базе как два разных — плюс в письме адрес капсом
+    # смотрится как опечатка.
+    candidates = {
+        e.lower() for e in EMAIL_RE.findall(html_text) if _is_plausible_email(e)
+    }
     if not candidates:
         return None
     # Предпочитаем адрес на домене самой компании — реже ловим email

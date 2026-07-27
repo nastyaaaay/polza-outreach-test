@@ -26,6 +26,8 @@ import csv
 import re
 from pathlib import Path
 
+from finalize import COLUMNS_RU
+
 LEADS_PATH = Path(__file__).parent / "output" / "leads_final.csv"
 TEMPLATE_PATH = Path(__file__).parent / "email_sequence.md"
 OUTPUT_PATH = Path(__file__).parent / "output" / "emails_ready.csv"
@@ -52,6 +54,64 @@ def _ensure_sentence(text: str) -> str:
     return text
 
 
+# ТЗ: "Каждое письмо: тема + тело. Длина - до 120 слов." Шаблон письма 1
+# укладывается в 87 слов, но персонализация добавляет к нему ещё 30-50 —
+# и в собранном письме лимит превышался на 11 строках из 43 (максимум 137
+# слов у Ipsos Comcon). Проверка шаблона этого не показывает: считать надо
+# готовое письмо, а не заготовку.
+WORD_LIMIT = 120
+
+_WORD_RE = re.compile(r"\b[а-яА-ЯёЁa-zA-Z0-9]+\b")
+
+
+def count_words(text: str) -> int:
+    return len(_WORD_RE.findall(text))
+
+
+def split_sentences(text: str) -> list[str]:
+    """Режем на предложения по знаку конца фразы."""
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p for p in parts if p.strip()]
+
+
+def fit_to_word_limit(personalization: str, overhead: int, limit: int = WORD_LIMIT) -> str:
+    """Укорачивает персонализацию так, чтобы письмо влезло в лимит слов.
+
+    Урезаем именно персонализацию, а не текст письма: письмо — выверенный
+    копирайтинг с лестницей CTA, а персонализация приходит от модели и её
+    длина не гарантирована.
+
+    Три шага по убыванию бережности: целиком -> по целым предложениям
+    (сколько влезет) -> первое предложение, обрезанное по словам. Обрезка
+    по словам — последняя мера, поэтому предложение при ней закрывается
+    точкой, а не многоточием: письмо не должно выглядеть оборванным.
+    """
+    budget = limit - overhead
+    if budget <= 0:
+        return ""
+
+    text = personalization.strip()
+    if count_words(text) <= budget:
+        return text
+
+    kept: list[str] = []
+    for sentence in split_sentences(text):
+        candidate = kept + [sentence]
+        if count_words(" ".join(candidate)) > budget:
+            break
+        kept = candidate
+    if kept:
+        return " ".join(kept)
+
+    # Даже первое предложение не влезает — режем по словам.
+    words = text.split()
+    while words and count_words(" ".join(words)) > budget:
+        words.pop()
+    if not words:
+        return ""
+    return _ensure_sentence(" ".join(words).rstrip(",;:—-"))
+
+
 def parse_template(md_text: str) -> list[dict]:
     """Разбирает email_sequence.md на три письма: тема + тело (всё между
     "**Тело:**" и следующим разделителем "---")."""
@@ -69,10 +129,19 @@ def parse_template(md_text: str) -> list[dict]:
     return letters
 
 
-def build_placeholders(contact_name: str, personalization: str) -> dict:
+_TRANSITION = "Поэтому пишу именно вам, а не рассылаю по всей базе подряд."
+
+
+def build_placeholders(
+    contact_name: str, personalization: str, word_budget: int | None = None
+) -> dict:
     """Считаем фолбэки честно: пустое имя — это факт о данных, а не повод
     выдумать "Иван". Возвращает и сами значения плейсхолдеров, и флаги —
-    сработал ли фолбэк по имени/персонализации (для итоговой сводки)."""
+    сработал ли фолбэк по имени/персонализации (для итоговой сводки).
+
+    word_budget — сколько слов остаётся на блок персонализации, чтобы всё
+    письмо влезло в лимит ТЗ. None — не ограничивать.
+    """
     name = contact_name.strip()
     no_data = _looks_like_no_data(personalization)
 
@@ -87,6 +156,7 @@ def build_placeholders(contact_name: str, personalization: str) -> dict:
         vstuplenie_2 = "Возвращаюсь с другого угла — ещё один заход, вдруг он окажется актуальнее."
         vstuplenie_3 = "Не хочу быть навязчивой — это последнее письмо от меня по этой теме."
 
+    trimmed = False
     if no_data:
         personalizatsiya_blok = (
             "Пишу вам не из общей рассылки, а прицельно — увидела вас в подборке "
@@ -94,10 +164,13 @@ def build_placeholders(contact_name: str, personalization: str) -> dict:
             "лидогенерации через холодный аутрич."
         )
     else:
-        personalizatsiya_blok = (
-            f"{_ensure_sentence(personalization)} "
-            "Поэтому пишу именно вам, а не рассылаю по всей базе подряд."
-        )
+        fact = _ensure_sentence(personalization)
+        if word_budget is not None:
+            # Фраза-переход входит в тот же бюджет, поэтому вычитаем её слова.
+            fitted = fit_to_word_limit(fact, count_words(_TRANSITION), word_budget)
+            trimmed = count_words(fitted) < count_words(fact)
+            fact = fitted
+        personalizatsiya_blok = f"{fact} {_TRANSITION}".strip() if fact else _TRANSITION
 
     return {
         "values": {
@@ -110,6 +183,7 @@ def build_placeholders(contact_name: str, personalization: str) -> dict:
         },
         "used_name_fallback": not name,
         "used_personalization_fallback": no_data,
+        "trimmed_personalization": trimmed,
     }
 
 
@@ -124,11 +198,22 @@ def render(template: str, values: dict[str, str]) -> str:
 def main() -> None:
     letters = parse_template(TEMPLATE_PATH.read_text(encoding="utf-8"))
 
-    rows = []
+    # leads_final.csv — артефакт для сдачи, шапка в нём на русском (см.
+    # COLUMNS_RU в finalize.py). Читаем через тот же маппинг, чтобы имя
+    # колонки было объявлено в одном месте, а не продублировано строкой.
     with open(LEADS_PATH, encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
+        rows = [
+            {en: raw.get(ru, "") for en, ru in COLUMNS_RU.items()}
+            for raw in csv.DictReader(f)
+        ]
 
-    stats = {"no_email": 0, "name_fallback": 0, "personalization_fallback": 0}
+    stats = {
+        "no_email": 0,
+        "name_fallback": 0,
+        "personalization_fallback": 0,
+        "trimmed": 0,
+        "over_limit": 0,
+    }
     out_rows = []
 
     for row in rows:
@@ -136,14 +221,28 @@ def main() -> None:
             stats["no_email"] += 1
             continue
 
-        built = build_placeholders(row.get("contact_name", ""), row.get("personalization", ""))
+        # Бюджет считаем по этой же строке: длина приветствия зависит от того,
+        # известно ли имя, поэтому overhead у строк разный. Рендерим письмо 1
+        # с пустой персонализацией и смотрим, сколько слов уже занято.
+        probe = build_placeholders(row.get("contact_name", ""), "")
+        probe["values"]["{{персонализация}}"] = ""
+        overhead = count_words(render(letters[0]["body"], probe["values"]))
+
+        built = build_placeholders(
+            row.get("contact_name", ""),
+            row.get("personalization", ""),
+            word_budget=WORD_LIMIT - overhead,
+        )
         stats["name_fallback"] += built["used_name_fallback"]
         stats["personalization_fallback"] += built["used_personalization_fallback"]
+        stats["trimmed"] += built["trimmed_personalization"]
 
         out_row = {"name": row["name"], "email": row["email"]}
         for i, letter in enumerate(letters, start=1):
             out_row[f"subject_{i}"] = render(letter["subject"], built["values"])
             out_row[f"body_{i}"] = render(letter["body"], built["values"])
+            if count_words(out_row[f"body_{i}"]) > WORD_LIMIT:
+                stats["over_limit"] += 1
         out_rows.append(out_row)
 
     fieldnames = ["name", "email"]
@@ -159,6 +258,11 @@ def main() -> None:
     print(f"без email (пропущено, отправлять некуда): {stats['no_email']}")
     print(f"без имени контакта — фолбэк 'Здравствуйте!': {stats['name_fallback']}")
     print(f"без персонализации — нейтральный фолбэк: {stats['personalization_fallback']}")
+    print(
+        f"персонализация укорочена под лимит {WORD_LIMIT} слов: {stats['trimmed']}"
+    )
+    # Должен быть ноль: если здесь не ноль, письмо нарушает требование ТЗ.
+    print(f"писем сверх лимита {WORD_LIMIT} слов: {stats['over_limit']}")
 
 
 if __name__ == "__main__":

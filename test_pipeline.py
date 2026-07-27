@@ -25,6 +25,7 @@ from collect_leads import (
     looks_like_template,
     normalize_contact_name,
 )
+from build_emails import count_words, fit_to_word_limit, split_sentences
 from finalize import sanitize_personalization
 from check_and_personalize import _url_variants, strip_spam
 
@@ -179,6 +180,43 @@ def test_contact_name_keeps_single_name():
 def test_contact_name_survives_clean_personalization():
     """Имя не должно выбрасываться, если оно просто не встречается в тексте."""
     assert normalize_contact_name("Сергей", "Агентство работает с 2005 года.") == "Сергей"
+
+
+# --- лимит длины письма ----------------------------------------------------
+
+def test_short_personalization_passes_untouched():
+    text = "Агентство работает с 2005 года."
+    assert fit_to_word_limit(text, 10, 120) == text
+
+
+def test_long_personalization_trimmed_to_whole_sentences():
+    """ТЗ: до 120 слов на письмо. Шаблон занимает 87, поэтому длинная
+    персонализация выбивала письмо за лимит (137 слов у Ipsos Comcon).
+    Режем по границе предложения, а не посередине фразы."""
+    text = "Первое предложение из пяти слов. Второе предложение тоже из пяти слов."
+    fitted = fit_to_word_limit(text, 0, 6)
+    assert fitted == "Первое предложение из пяти слов."
+
+
+def test_trim_falls_back_to_words_when_sentence_too_long():
+    """Если даже первое предложение не влезает — режем по словам и закрываем
+    точкой: письмо не должно выглядеть оборванным на полуслове."""
+    text = "Очень длинное предложение которое никак не влезает в отведённый бюджет слов."
+    fitted = fit_to_word_limit(text, 0, 4)
+    assert count_words(fitted) <= 4
+    assert fitted.endswith(".")
+
+
+def test_trim_returns_empty_when_no_budget():
+    assert fit_to_word_limit("Любой текст.", 120, 120) == ""
+
+
+def test_count_words_ignores_punctuation():
+    assert count_words("Три слова, всего.") == 3
+
+
+def test_split_sentences_handles_question_and_exclamation():
+    assert split_sentences("Раз. Два! Три?") == ["Раз.", "Два!", "Три?"]
 
 
 # --- поиск страницы команды -----------------------------------------------

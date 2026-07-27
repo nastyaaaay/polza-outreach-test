@@ -67,9 +67,22 @@ KNOWN_DOMAINS = {
     "Brand Analytics": "https://brandanalytics.ru/",
     "Frank RG": "https://frankrg.com/",
     "Novikov Marketing Consulting": "https://novikov.consulting/",
-    # Не найдено через 2ГИС — сознательно исключены, не гадаем домен:
+    # Добор до запаса над минимумом ТЗ ("минимум 50 компаний"): после
+    # исключения строки с группой ВКонтакте база вышла ровно на 50, то есть
+    # без запаса — любая забракованная строка уводила её под минимум.
+    # Все девять проверены вручную: сайт открывается, email на своём домене.
+    "Kerber агентство": "https://kerber.agency/",
+    "Ingate": "https://ingate.ru/",
+    "Ашманов и партнёры": "https://www.ashmanov.com/",
+    "Nimax": "https://nimax.ru/",
+    "Molinos": "https://molinos.ru/",
+    "Adventum": "https://adventum.ru/",
+    "iConText": "https://icontext.ru/",
+    "Registratura": "https://registratura.ru/",
+    "SETTERS": "https://setters.agency/",
+    # Не найдено — сознательно исключены, домен не гадаем:
     # "2-Step агентство", "Goodwill маркетинговое агентство",
-    # "Kerber агентство", "Madmonks агентство"
+    # "Madmonks агентство" (ни один вариант домена не открылся)
     # "Лига трафика агентство" — поиск отдавал только группу ВКонтакте,
     # своего сайта у компании не нашлось; группа соцсети сайтом не
     # считается (см. NOT_A_WEBSITE_DOMAINS), домен не выдумываем.

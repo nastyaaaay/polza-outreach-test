@@ -50,6 +50,19 @@ def sanitize_personalization(text: str, name_fixes: dict[str, str]) -> str:
 SRC = Path("output/leads.csv")
 DST = Path("output/leads_final.csv")
 
+# Итоговый файл заливается в Google Таблицу как есть, поэтому шапка на
+# русском: ТЗ требует по задаче 1 колонки "название, сайт, имя и email", а
+# по задаче 2 — столбец "Персонализация" именно под таким именем.
+# Промежуточный output/leads.csv остаётся на латинице: он машинный.
+COLUMNS_RU = {
+    "name": "Название",
+    "website": "Сайт",
+    "contact_name": "Имя",
+    "email": "Email",
+    "personalization": "Персонализация",
+    "personalization_source": "Источник персонализации",
+}
+
 # Уточняющие суффиксы для поиска -> чистое название компании
 RENAME = {
     "Depot Branding Agency": "Depot",
@@ -112,15 +125,10 @@ def main():
             rows.append(row)
 
     with open(DST, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "name", "website", "contact_name", "email",
-                "personalization", "personalization_source",
-            ],
-        )
+        writer = csv.DictWriter(f, fieldnames=list(COLUMNS_RU.values()))
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow({ru: row.get(en, "") for en, ru in COLUMNS_RU.items()})
 
     print(f"final rows: {len(rows)}")
     print(f"with contact name: {sum(1 for r in rows if r.get('contact_name'))}")
