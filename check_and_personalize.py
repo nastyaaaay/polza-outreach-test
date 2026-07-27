@@ -169,13 +169,21 @@ def _url_variants(site: str) -> list[str]:
 
 def open_site(client: httpx.Client, site: str) -> Probe:
     """Открываем сайт, перебирая варианты адреса, и вытаскиваем из него
-    заголовок и осмысленный текст."""
+    заголовок и осмысленный текст.
+
+    Заглушка на одном варианте адреса не означает, что сайт мёртв — у
+    Internor https-версия отдаёт заглушку остановленного хостинга Aliyun,
+    а живой сайт открывается только на http://www. Поэтому заглушка не
+    прерывает перебор (было: return, из-за чего следующий вариант даже не
+    пробовался) — перебор продолжается, и только если ВСЕ варианты
+    оказались заглушкой/пустыми, возвращаем последнюю такую попытку."""
     probe = Probe()
     if not site:
         probe.error = "адрес не указан"
         return probe
 
     last_error = ""
+    last_stub: Probe | None = None
     for url in _url_variants(site):
         try:
             resp = client.get(url, headers=HEADERS, timeout=20, follow_redirects=True)
@@ -183,8 +191,7 @@ def open_site(client: httpx.Client, site: str) -> Probe:
             last_error = f"{type(e).__name__}"
             continue
 
-        probe.url = str(resp.url)
-        probe.status = resp.status_code
+        candidate = Probe(url=str(resp.url), status=resp.status_code)
         if resp.status_code != 200:
             last_error = f"HTTP {resp.status_code}"
             continue
@@ -197,21 +204,29 @@ def open_site(client: httpx.Client, site: str) -> Probe:
 
         lowered = html.lower()
         if any(marker in lowered for marker in STUB_MARKERS):
-            probe.is_stub = True
-            probe.error = "страница-заглушка"
-            return probe
+            candidate.is_stub = True
+            candidate.error = "страница-заглушка"
+            last_stub = candidate
+            last_error = candidate.error
+            continue
 
         soup = BeautifulSoup(html, "html.parser")
-        probe.title = soup.title.get_text(strip=True) if soup.title else ""
-        probe.text = strip_spam(extract_context_text(html))
-        if len(probe.text) < 120:
-            probe.text = strip_spam(visible_text(html)) or probe.text
-        probe.html = html
-        if not probe.title and not probe.text:
-            probe.is_stub = True
-            probe.error = "страница пустая"
-        return probe
+        candidate.title = soup.title.get_text(strip=True) if soup.title else ""
+        candidate.text = strip_spam(extract_context_text(html))
+        if len(candidate.text) < 120:
+            candidate.text = strip_spam(visible_text(html)) or candidate.text
+        candidate.html = html
+        if not candidate.title and not candidate.text:
+            candidate.is_stub = True
+            candidate.error = "страница пустая"
+            last_stub = candidate
+            last_error = candidate.error
+            continue
 
+        return candidate
+
+    if last_stub is not None:
+        return last_stub
     probe.error = last_error or "не отвечает"
     return probe
 
