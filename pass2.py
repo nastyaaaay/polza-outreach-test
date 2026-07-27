@@ -1,7 +1,9 @@
 """
 Второй проход: для компаний, чьи сайты уже найдены (через 2ГИС или известны
-напрямую), пропускаем поиск и сразу идём fetch -> email -> LLM-персонализация.
-Результат дописывается в output/leads.csv.
+напрямую), пропускаем поиск и сразу идём fetch -> email -> LLM-персонализация
+через ту же process_company() из collect_leads.py — только с уже известным
+website, без повторного search_website(). Результат дописывается в
+output/leads.csv.
 """
 
 import csv
@@ -9,55 +11,18 @@ import time
 
 import httpx
 
-from collect_leads import (
-    OUTPUT_PATH,
-    extract_context_text,
-    extract_contact_name,
-    extract_email,
-    fetch,
-    find_contact_page,
-    generate_personalization,
-)
+from collect_leads import OUTPUT_PATH, process_company
 from known_domains import KNOWN_DOMAINS
 
 
-def process_known(client: httpx.Client, name: str, website: str, stats: dict | None = None) -> dict:
-    row = {
-        "name": name,
-        "website": website,
-        "contact_name": "",
-        "email": "",
-        "personalization": "",
-        "personalization_source": "",
-    }
-
-    domain = httpx.URL(website).host or ""
-    home_html = fetch(client, website)
-    if not home_html:
-        return row
-
-    email = extract_email(home_html, domain)
-    context = extract_context_text(home_html)
-    source_url = website
-
-    contact_url = find_contact_page(website, home_html)
-    contact_html = fetch(client, contact_url) if contact_url else None
-    if contact_html:
-        if not email:
-            email = extract_email(contact_html, domain)
-        if not context:
-            context = extract_context_text(contact_html)
-            source_url = contact_url
-
-    contact_name = extract_contact_name(client, contact_html, stats) if contact_html else ""
-    if not contact_name:
-        contact_name = extract_contact_name(client, home_html, stats)
-
-    row["email"] = email or ""
-    row["contact_name"] = contact_name
-    row["personalization_source"] = source_url if context else ""
-    row["personalization"] = generate_personalization(client, name, context, stats)
-    return row
+def _already_processed(path) -> set[str]:
+    """Имена, уже записанные в output/leads.csv — если pass2.py запустить
+    повторно (например, после сбоя на середине), дописывание "a" без этой
+    проверки задвоило бы строки для уже обработанных компаний."""
+    if not path.exists():
+        return set()
+    with open(path, encoding="utf-8") as f:
+        return {row["name"] for row in csv.DictReader(f)}
 
 
 def main():
@@ -65,7 +30,8 @@ def main():
         "name", "website", "contact_name", "email",
         "personalization", "personalization_source",
     ]
-    items = list(KNOWN_DOMAINS.items())
+    done = _already_processed(OUTPUT_PATH)
+    items = [(name, site) for name, site in KNOWN_DOMAINS.items() if name not in done]
     stats = {"llm_failures": 0}
 
     with open(OUTPUT_PATH, "a", newline="", encoding="utf-8") as f, httpx.Client() as client:
@@ -74,7 +40,7 @@ def main():
         for i, (name, website) in enumerate(items, start=1):
             print(f"[{i}/{len(items)}] {name} ...", end=" ", flush=True)
             failures_before = stats["llm_failures"]
-            row = process_known(client, name, website, stats)
+            row = process_company(client, name, stats, website=website)
             writer.writerow(row)
             f.flush()
             if stats["llm_failures"] > failures_before:

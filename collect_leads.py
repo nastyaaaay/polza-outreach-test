@@ -68,6 +68,17 @@ def _get_with_retries(client: httpx.Client, url: str, *, params=None, retries=3)
     return None
 
 
+# Соцсети и каталоги: попадают в топ выдачи по названию компании чаще, чем
+# её собственный сайт, но группа ВКонтакте — не сайт (у "Лига трафика
+# агентство" в базу так попал vk.com/liga_traffic вместо реального домена,
+# без единого шанса найти на нём email или текст для персонализации).
+NOT_A_WEBSITE_DOMAINS = (
+    "vk.com", "vk.ru", "ok.ru", "facebook.com", "instagram.com",
+    "t.me", "telegram.me", "youtube.com", "linkedin.com",
+    "2gis.ru", "yandex.ru", "zoon.ru", "wikipedia.org",
+)
+
+
 def search_website(client: httpx.Client, query: str) -> str | None:
     """Ищем официальный сайт компании через DuckDuckGo HTML-выдачу."""
     resp = _get_with_retries(
@@ -89,6 +100,9 @@ def search_website(client: httpx.Client, query: str) -> str | None:
         else:
             target = href
         if target.startswith("http") and "duckduckgo.com" not in target:
+            host = (httpx.URL(target).host or "").lower()
+            if any(host == d or host.endswith("." + d) for d in NOT_A_WEBSITE_DOMAINS):
+                continue
             return target
     return None
 
@@ -115,11 +129,18 @@ def fetch(client: httpx.Client, url: str) -> str | None:
 
 
 def find_contact_page(base_url: str, html_text: str) -> str | None:
-    """Ищем ссылку на страницу контактов/о компании на главной."""
+    """Ищем ссылку на страницу контактов/о компании на главной.
+
+    Ссылка "Контакты" иногда ведёт не на страницу, а прямо на mailto:/tel: —
+    такой href пройдёт мимо CONTACT_LINK_RE по тексту ссылки, но не является
+    HTTP-адресом: fetch() на нём просто впустую тратит retries и время.
+    """
     soup = BeautifulSoup(html_text, "html.parser")
     for a in soup.select("a[href]"):
         text = a.get_text(" ", strip=True)
         href = a["href"]
+        if href.startswith(("mailto:", "tel:")):
+            continue
         if CONTACT_LINK_RE.search(text) or CONTACT_LINK_RE.search(href):
             return str(httpx.URL(base_url).join(href))
     return None
@@ -318,7 +339,13 @@ def extract_contact_name(client: httpx.Client, html_text: str, stats: dict | Non
     return name[:40]
 
 
-def process_company(client: httpx.Client, name: str, stats: dict | None = None) -> dict:
+def process_company(
+    client: httpx.Client, name: str, stats: dict | None = None, website: str | None = None
+) -> dict:
+    """website=None — ищем сайт через search_website() (проход 1). Если сайт
+    уже известен (проход 2, из known_domains.py), передаём его напрямую и
+    поиск пропускаем — вся остальная логика (fetch -> email -> контекст ->
+    имя -> персонализация) общая для обоих проходов."""
     row = {
         "name": name,
         "website": "",
@@ -328,7 +355,8 @@ def process_company(client: httpx.Client, name: str, stats: dict | None = None) 
         "personalization_source": "",
     }
 
-    website = search_website(client, name)
+    if website is None:
+        website = search_website(client, name)
     if not website:
         return row
     row["website"] = website

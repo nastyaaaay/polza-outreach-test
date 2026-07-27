@@ -20,6 +20,10 @@ import csv
 import re
 from pathlib import Path
 
+import httpx
+
+from collect_leads import NOT_A_WEBSITE_DOMAINS
+
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 
 # Юникод-символы, которые LLM иногда вставляет вместо обычных ascii-аналогов
@@ -94,7 +98,11 @@ def main():
     with open(SRC, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             name = RENAME.get(row["name"].strip(), row["name"].strip())
-            if not row["website"] or name in seen:
+            website_host = (httpx.URL(row["website"]).host or "").lower() if row["website"] else ""
+            not_a_site = any(
+                website_host == d or website_host.endswith("." + d) for d in NOT_A_WEBSITE_DOMAINS
+            )
+            if not row["website"] or not_a_site or name in seen:
                 continue
             seen.add(name)
             if row["email"] and "vk-portal.net" in row["email"]:
