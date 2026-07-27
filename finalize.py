@@ -79,6 +79,8 @@ RENAME = {
     "ArrivoMedia агентство": "ArrivoMedia",
     "Kochev агентство": "Kochev Marketing",
     "Ony агентство Москва": "Ony",
+    "Лига трафика агентство": "Лига трафика",
+    "Neurobrand агентство": "Neurobrand",
     "Agima интерактивное агентство": "Agima",
     "inSales платформа онлайн-торговли": "inSales",
     "БТВ-Инфо IT-компания": "БТВ-Инфо",
