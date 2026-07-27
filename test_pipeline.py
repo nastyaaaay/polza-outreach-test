@@ -20,6 +20,8 @@ from collect_leads import (
     _email_rank,
     _is_plausible_email,
     extract_email,
+    extract_people_text,
+    find_team_page,
     looks_like_template,
     normalize_contact_name,
 )
@@ -177,6 +179,47 @@ def test_contact_name_keeps_single_name():
 def test_contact_name_survives_clean_personalization():
     """Имя не должно выбрасываться, если оно просто не встречается в тексте."""
     assert normalize_contact_name("Сергей", "Агентство работает с 2005 года.") == "Сергей"
+
+
+# --- поиск страницы команды -----------------------------------------------
+
+def test_finds_team_page_link():
+    """Имена сотрудников лежат в разделе команды, а не на «Контактах»:
+    у Depot это /about/team/, у «Родной речи» /board. Пока эта страница не
+    искалась, колонка имени оставалась пустой не потому, что имён нет."""
+    html = '<a href="/contacts">Контакты</a><a href="/about/team/">Команда</a>'
+    assert find_team_page("https://example.ru/", html) == "https://example.ru/about/team/"
+
+
+def test_finds_team_page_by_href_when_text_differs():
+    html = '<a href="/board">Наши люди</a>'
+    assert find_team_page("https://example.ru/", html) == "https://example.ru/board"
+
+
+def test_no_team_page_returns_none():
+    html = '<a href="/contacts">Контакты</a><a href="/prices">Цены</a>'
+    assert find_team_page("https://example.ru/", html) is None
+
+
+def test_team_page_skips_mailto():
+    html = '<a href="mailto:team@example.ru">Команда</a>'
+    assert find_team_page("https://example.ru/", html) is None
+
+
+def test_people_text_keeps_short_lines_with_names():
+    """Общий экстрактор отбрасывает строки короче 40 символов — то есть ровно
+    "Алексей Андреев, управляющий партнёр"."""
+    html = "<div><div>Алексей Андреев</div><div>управляющий партнёр</div></div>"
+    text = extract_people_text(html)
+    assert "Алексей Андреев" in text
+    assert "управляющий партнёр" in text
+
+
+def test_people_text_drops_scripts():
+    html = "<script>var x = 'Иван Иванов';</script><div>Пётр Петров</div>"
+    text = extract_people_text(html)
+    assert "Пётр Петров" in text
+    assert "var x" not in text
 
 
 # --- детект незаполненного шаблона ----------------------------------------

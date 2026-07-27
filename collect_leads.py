@@ -49,6 +49,15 @@ HEADERS = {
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 CONTACT_LINK_RE = re.compile(r"контакт|contact|о\s?компании|about", re.IGNORECASE)
 
+# Страница "Команда" — отдельно от контактов, потому что ищем на ней другое.
+# На "Контактах" у российских агентств лежит info@ и телефон, а живые имена
+# с должностями — именно в разделе команды: у Depot это /about/team/, у
+# "Родной речи" /board. Без этого поиска колонка имени оставалась почти
+# пустой не потому, что имён нет, а потому что мы не там смотрели.
+TEAM_LINK_RE = re.compile(
+    r"команда|team|board|сотрудник|наши\s?люди|people|руководство", re.IGNORECASE
+)
+
 OUTPUT_PATH = Path(__file__).parent / "output" / "leads.csv"
 
 
@@ -142,6 +151,23 @@ def find_contact_page(base_url: str, html_text: str) -> str | None:
         if href.startswith(("mailto:", "tel:")):
             continue
         if CONTACT_LINK_RE.search(text) or CONTACT_LINK_RE.search(href):
+            return str(httpx.URL(base_url).join(href))
+    return None
+
+
+def find_team_page(base_url: str, html_text: str) -> str | None:
+    """Ссылка на страницу команды/руководства, если она есть.
+
+    Отдельно от find_contact_page: там ищется адрес для письма, здесь —
+    человек, к которому можно обратиться по имени.
+    """
+    soup = BeautifulSoup(html_text, "html.parser")
+    for a in soup.select("a[href]"):
+        href = a["href"]
+        if href.startswith(("mailto:", "tel:")):
+            continue
+        text = a.get_text(" ", strip=True)
+        if TEAM_LINK_RE.search(text) or TEAM_LINK_RE.search(href):
             return str(httpx.URL(base_url).join(href))
     return None
 
@@ -363,6 +389,27 @@ def generate_personalization(
     return ask_llm(client, system_prompt, user_prompt, stats)
 
 
+def extract_people_text(html_text: str) -> str:
+    """Текст страницы команды: имена вместе с должностями.
+
+    Отдельно от extract_context_text(), которая берёт meta description и
+    абзацы p/h1/h2 — на странице команды имена сверстаны карточками в div,
+    и оттуда возвращается почти пустота. Общий visible_text-подход тоже не
+    годится: он отбрасывает строки короче 40 символов, а "Алексей Андреев,
+    управляющий партнёр" в этот лимит не попадает — то есть отсекается
+    ровно то, что мы ищем.
+    """
+    soup = BeautifulSoup(html_text, "html.parser")
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+    chunks = [
+        chunk
+        for chunk in (line.strip() for line in soup.get_text("\n").splitlines())
+        if len(chunk) > 2
+    ]
+    return re.sub(r"[ \t]+", " ", " | ".join(chunks))[:2500]
+
+
 # Отчество опознаётся по окончанию. Нужно, чтобы понять, где в "Новицкий
 # Сергей Владимирович" собственно имя: в холодном письме "Привет, Новицкий
 # Сергей Владимирович!" звучит как повестка, а не как письмо человеку.
@@ -422,6 +469,7 @@ def extract_contact_name(
     html_text: str,
     stats: dict | None = None,
     personalization: str = "",
+    is_team_page: bool = False,
 ) -> str:
     """Имя человека, к которому можно обратиться в письме, а не название
     компании. ТЗ требует колонку "имя" в базе, и цепочка писем обращается
@@ -433,7 +481,10 @@ def extract_contact_name(
     и пустая строка здесь честнее выдуманного "Иван". Результат дополнительно
     проходит normalize_contact_name() — промпта одного оказалось мало.
     """
-    text = extract_context_text(html_text)
+    # На странице команды имена сверстаны карточками, обычный экстрактор их
+    # не видит — берём текст полнее. На остальных страницах наоборот: полный
+    # текст тащит меню и подвал, поэтому там оставляем осмысленные абзацы.
+    text = extract_people_text(html_text) if is_team_page else extract_context_text(html_text)
     if not text.strip():
         return ""
 
@@ -448,9 +499,14 @@ def extract_contact_name(
         "ВАЖНО: не бери имена людей из примеров работ, портфолио, кейсов, "
         "отзывов, списка клиентов и партнёров — это чужие люди, а не "
         "контакты этой компании. Если имя встречается только там, отвечай "
-        "'нет'."
+        "'нет'.\n"
+        "Если на странице перечислено много сотрудников, выбери одного — "
+        "самого старшего по должности: основателя, владельца, генерального "
+        "директора, управляющего партнёра, руководителя. Письмо пишется "
+        "одному человеку, и решение о закупке принимает он, а не рядовой "
+        "сотрудник."
     )
-    user_prompt = f"Текст страницы:\n{text[:1200]}"
+    user_prompt = f"Текст страницы:\n{text[:2500]}"
     answer = ask_llm(client, system_prompt, user_prompt, stats)
 
     m = re.search(r"ИМЯ:\s*(.+)", answer)
@@ -512,11 +568,18 @@ def process_company(
     # компании (см. normalize_contact_name).
     personalization = generate_personalization(client, name, context, stats, website)
 
+    # Имя ищем в порядке убывания шансов: страница команды -> контакты ->
+    # главная. Раздел команды даёт имя с должностью, поэтому там же можно
+    # выбрать старшего, а не первого попавшегося сотрудника.
+    team_url = find_team_page(website, home_html)
+    team_html = fetch(client, team_url) if team_url else None
     contact_name = (
-        extract_contact_name(client, contact_html, stats, personalization)
-        if contact_html
+        extract_contact_name(client, team_html, stats, personalization, is_team_page=True)
+        if team_html
         else ""
     )
+    if not contact_name and contact_html:
+        contact_name = extract_contact_name(client, contact_html, stats, personalization)
     if not contact_name:
         contact_name = extract_contact_name(client, home_html, stats, personalization)
 
