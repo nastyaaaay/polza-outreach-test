@@ -484,6 +484,29 @@ def collect_issues(row: Row, probe: Probe, verdict: str, owner: str, duplicates:
         row.issues.append(f"домен почты ({email_domain}) не совпадает с доменом сайта")
 
 
+def check_email_against_real_site(row: Row, probe: Probe, site_domain: str) -> None:
+    """collect_issues() сверяет домен почты с site_in_base — если сайт и
+    почта в строке подменены СОГЛАСОВАННО (Tesid Equipment: и sales@unimach.ru,
+    и unimach.ru — сайт «Юнимаша», а не настоящего Beijing TESID), эта сверка
+    молчит: домены совпадают друг с другом, просто оба чужие. Здесь сверяем
+    уже с доменом реально найденного сайта, по которому строится
+    персонализация — письмо не должно уйти не той компании (кейс JAT/Tesid
+    из task4_analysis.md, п.4 "ключевые находки")."""
+    if not probe.alive or not probe.url:
+        return
+    email_domain = row.email.rsplit("@", 1)[-1].lower() if "@" in row.email else ""
+    if not email_domain or email_domain in FREE_MAIL_DOMAINS:
+        return
+    real_domain = (httpx.URL(probe.url).host or "").lower().removeprefix("www.")
+    if not real_domain or real_domain == site_domain:
+        return  # уже проверено и отражено в collect_issues()
+    if email_domain.removeprefix("www.") != real_domain:
+        row.issues.append(
+            f"домен почты ({email_domain}) не совпадает с реально найденным "
+            f"сайтом ({real_domain}) — письмо может уйти не той компании"
+        )
+
+
 def main() -> None:
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
     rows = load_base(BASE_PATH)
@@ -536,6 +559,10 @@ def main() -> None:
                     row.issues.append(
                         "настоящий сайт не найден, персонализация не построена"
                     )
+
+            check_email_against_real_site(
+                row, probe, row.site_in_base.lower().removeprefix("www.")
+            )
 
             language = detect_language(probe) if probe.alive else ""
             industry, niche = check_niche(client, row.name, probe)
