@@ -48,11 +48,14 @@ def main():
         for i, (name, website) in enumerate(items, start=1):
             print(f"[{i}/{len(items)}] {name} ...", end=" ", flush=True)
             failures_before = stats["llm_failures"]
+            templates_before = stats.get("template_pages", 0)
             row = process_company(client, name, stats, website=website)
             writer.writerow(row)
             f.flush()
             if stats["llm_failures"] > failures_before:
                 print("LLM недоступна — без персонализации")
+            elif stats.get("template_pages", 0) > templates_before:
+                print("сайт — незаполненный шаблон, персонализации нет")
             else:
                 print("OK" if row["email"] or row["personalization"] else "частично")
             time.sleep(0.5)
@@ -61,6 +64,11 @@ def main():
         print(
             f"\n{stats['llm_failures']} из {len(items)} строк — без "
             "персонализации из-за ошибки LLM"
+        )
+    if stats.get("template_pages"):
+        print(
+            f"{stats['template_pages']} из {len(items)} строк — сайт оказался "
+            "незаполненным демо-шаблоном, персонализация не построена"
         )
 
 

@@ -20,6 +20,7 @@ from collect_leads import (
     _email_rank,
     _is_plausible_email,
     extract_email,
+    looks_like_template,
     normalize_contact_name,
 )
 from finalize import sanitize_personalization
@@ -176,6 +177,41 @@ def test_contact_name_keeps_single_name():
 def test_contact_name_survives_clean_personalization():
     """Имя не должно выбрасываться, если оно просто не встречается в тексте."""
     assert normalize_contact_name("Сергей", "Агентство работает с 2005 года.") == "Сергей"
+
+
+# --- детект незаполненного шаблона ----------------------------------------
+
+def test_template_detected_by_placeholder_phrase():
+    """Главная rocket-media.ru — демо-рыба WordPress-темы: модель честно
+    пересказала её и в базу уехал несуществующий продукт "Launchify".
+    Плейсхолдер темы остался прямо в тексте."""
+    text = (
+        "Display a site wide notice to your visitors here We've just launched "
+        "a new product. Launchify has everything you need."
+    )
+    assert looks_like_template(text, "https://rocket-media.ru/")
+
+
+def test_template_detected_by_russian_domain_without_cyrillic():
+    """Российское агентство, на сайте которого нет ни одной кириллической
+    буквы, — это непереведённая демо-тема, а не настоящий сайт."""
+    text = "The perfect way to launch your next project with our expert guidance."
+    assert looks_like_template(text, "https://example.ru/")
+
+
+def test_real_russian_site_is_not_template():
+    text = "Агентство полного цикла: медиа, креатив, аналитика с 2005 года."
+    assert not looks_like_template(text, "https://example.ru/")
+
+
+def test_foreign_english_site_is_not_template():
+    """Английский текст на нероссийском домене — норма, не шаблон."""
+    text = "We manufacture carbide inserts for metalworking since 1998."
+    assert not looks_like_template(text, "https://jatcarbide.com/")
+
+
+def test_empty_text_is_not_template():
+    assert not looks_like_template("", "https://example.ru/")
 
 
 if __name__ == "__main__":

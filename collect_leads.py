@@ -286,10 +286,68 @@ def ask_llm(
         return ""
 
 
+# Фразы, которые встречаются только в НЕзаполненной демо-теме: это подписи
+# самого шаблона, а не текст компании. Владелец сайта их просто не удалил.
+_TEMPLATE_MARKERS = (
+    "display a site wide notice",
+    "lorem ipsum",
+    "just another wordpress site",
+    "sample page",
+    "your business name",
+    "add your content here",
+    "edit this text",
+    "hello world!",
+    "insert your text here",
+    "заголовок h1",
+    "текст заглушка",
+)
+
+
+def looks_like_template(text: str, website: str = "") -> bool:
+    """Страница — незаполненный демо-шаблон, а не сайт компании.
+
+    Ровно тот случай, который дал единственную чистую выдумку в базе:
+    главная rocket-media.ru отдаёт демо-рыбу WordPress-темы "Launchify" на
+    английском, вместе с плейсхолдером "Display a site wide notice to your
+    visitors here". Модель добросовестно пересказывает то, что видит, и в
+    базу уезжает "компания запустила продукт Launchify" — продукт, которого
+    не существует. Запрет выдумывать тут не помогает: с точки зрения модели
+    она ничего и не выдумала, дефектен сам источник.
+
+    Два признака:
+      1. Подписи самого шаблона, которые владелец не удалил.
+      2. Российский домен, на котором нет ни одной кириллической буквы, —
+         для агентства из московской выборки это верный знак, что стоит
+         непереведённая тема, а не настоящий сайт.
+    """
+    if not text.strip():
+        return False
+
+    lowered = text.lower()
+    if any(marker in lowered for marker in _TEMPLATE_MARKERS):
+        return True
+
+    host = (httpx.URL(website).host or "").lower() if website else ""
+    if host.endswith((".ru", ".su", ".рф")) and not re.search(r"[а-яА-ЯёЁ]", text):
+        return True
+    return False
+
+
 def generate_personalization(
-    client: httpx.Client, company: str, context: str, stats: dict | None = None
+    client: httpx.Client,
+    company: str,
+    context: str,
+    stats: dict | None = None,
+    website: str = "",
 ) -> str:
     if not context.strip():
+        return ""
+
+    # По демо-шаблону персонализацию не строим: пустая ячейка честнее факта,
+    # взятого из чужой рыбы.
+    if looks_like_template(context, website):
+        if stats is not None:
+            stats["template_pages"] = stats.get("template_pages", 0) + 1
         return ""
 
     system_prompt = (
@@ -452,7 +510,7 @@ def process_company(
     # Если найденное "имя контакта" дословно встречается в тексте
     # персонализации — это имя из портфолио или отзыва, а не контакт
     # компании (см. normalize_contact_name).
-    personalization = generate_personalization(client, name, context, stats)
+    personalization = generate_personalization(client, name, context, stats, website)
 
     contact_name = (
         extract_contact_name(client, contact_html, stats, personalization)
