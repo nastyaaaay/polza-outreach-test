@@ -8,11 +8,40 @@
     трекинг-адрес ВКонтакте на групповой странице, не реальный контакт);
   - убирает уточняющие слова, которые добавлялись в companies_seed.py/
     known_domains.py только для точности поиска (например,
-    "Qsoft разработка сайтов" -> "Qsoft").
+    "Qsoft разработка сайтов" -> "Qsoft");
+  - чистит текст персонализации: markdown-звёздочки, юникод-мусор
+    (неразрывный дефис/узкий пробел) и утёкшие в текст поисковые суффиксы
+    названия компании (LLM в generate_personalization() получала на вход
+    сырое имя из companies_seed.py вместе с суффиксом и иногда честно
+    пересказывала его обратно в тексте персонализации).
 """
 
 import csv
+import re
 from pathlib import Path
+
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+# Юникод-символы, которые LLM иногда вставляет вместо обычных ascii-аналогов
+# (типографский неразрывный дефис, узкий и обычный неразрывный пробел) —
+# ломают наивный поиск/подстановку в шаблоне письма и выглядят как мусор
+# при копировании в почтовый клиент.
+_UNICODE_FIXES = {
+    "‑": "-",
+    " ": " ",
+    " ": " ",
+}
+
+
+def sanitize_personalization(text: str, name_fixes: dict[str, str]) -> str:
+    if not text:
+        return text
+    for raw, clean in name_fixes.items():
+        text = text.replace(raw, clean)
+    for bad, good in _UNICODE_FIXES.items():
+        text = text.replace(bad, good)
+    text = _MD_BOLD_RE.sub(r"\1", text)
+    return re.sub(r"[ \t]+", " ", text).strip()
 
 SRC = Path("output/leads.csv")
 DST = Path("output/leads_final.csv")
@@ -69,6 +98,7 @@ def main():
             if row["email"] and "vk-portal.net" in row["email"]:
                 row["email"] = ""
             row["name"] = name
+            row["personalization"] = sanitize_personalization(row["personalization"], RENAME)
             rows.append(row)
 
     with open(DST, "w", newline="", encoding="utf-8") as f:
