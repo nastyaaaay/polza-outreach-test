@@ -1,9 +1,13 @@
 """
-Второй проход: для компаний, чьи сайты уже найдены (через 2ГИС или известны
-напрямую), пропускаем поиск и сразу идём fetch -> email -> LLM-персонализация
-через ту же process_company() из collect_leads.py — только с уже известным
-website, без повторного search_website(). Результат дописывается в
-output/leads.csv.
+Проход по компаниям с уже известным доменом (known_domains.py): пропускаем
+поиск и сразу идём fetch -> email -> имя контакта -> LLM-персонализация
+через ту же process_company() из collect_leads.py, только с готовым
+website вместо search_website(). Результат дописывается в output/leads.csv.
+
+Поскольку в known_domains.py теперь собраны ВСЕ найденные домены, этого
+скрипта достаточно для полного воспроизведения базы — без обращений к
+поисковику и без зависимости от его капчи. Если output/leads.csv не
+существует или пуст, заголовок пишется здесь же.
 """
 
 import csv
@@ -30,12 +34,16 @@ def main():
         "name", "website", "contact_name", "email",
         "personalization", "personalization_source",
     ]
+    OUTPUT_PATH.parent.mkdir(exist_ok=True)
+    needs_header = not OUTPUT_PATH.exists() or OUTPUT_PATH.stat().st_size == 0
     done = _already_processed(OUTPUT_PATH)
     items = [(name, site) for name, site in KNOWN_DOMAINS.items() if name not in done]
     stats = {"llm_failures": 0}
 
     with open(OUTPUT_PATH, "a", newline="", encoding="utf-8") as f, httpx.Client() as client:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if needs_header:
+            writer.writeheader()
 
         for i, (name, website) in enumerate(items, start=1):
             print(f"[{i}/{len(items)}] {name} ...", end=" ", flush=True)
