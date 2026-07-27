@@ -27,6 +27,29 @@ from build_emails import TEMPLATE_PATH, parse_template
 
 SEQUENCE_DST = Path(__file__).parent / "output" / "sheet_sequence.csv"
 EMAILS_DST = Path(__file__).parent / "output" / "sheet_emails.csv"
+CHECKED_SRC = Path(__file__).parent / "output" / "polza_checked.csv"
+CHECKED_DST = Path(__file__).parent / "output" / "sheet_polza_checked.csv"
+
+# Лист по задаче 4. Порядок колонок не как в исходном CSV: сначала то, что
+# дал клиент, сразу за ним — что именно не сошлось (главный результат
+# задачи, его должно быть видно без прокрутки), и только потом как
+# проверяли и что получилось.
+CHECKED_COLUMNS = {
+    "name": "Компания",
+    "email": "Email из базы",
+    "site_in_base": "Сайт из базы",
+    "issues": "Что не сошлось",
+    "verdict": "Сайт принадлежит этой компании?",
+    "site_owner": "Кому принадлежит сайт по факту",
+    "site_status": "Статус сайта из базы",
+    "site_used": "По какому сайту строили персонализацию",
+    "site_source": "Откуда взяли этот сайт",
+    "industry": "Отрасль",
+    "niche": "Ниша базы",
+    "language": "Язык письма",
+    "personalization": "Персонализация",
+    "personalization_source": "Источник персонализации",
+}
 
 # Заголовки листа с готовыми письмами: emails_ready.csv машинный
 # (subject_1/body_1), а лист читают глазами.
@@ -84,8 +107,25 @@ def main() -> None:
             writer.writerow({ru: row.get(en, "") for en, ru in EMAIL_COLUMNS.items()})
             count += 1
 
+    with open(CHECKED_SRC, encoding="utf-8") as src, open(
+        CHECKED_DST, "w", newline="", encoding="utf-8"
+    ) as dst:
+        reader = csv.DictReader(src)
+        writer = csv.DictWriter(dst, fieldnames=list(CHECKED_COLUMNS.values()))
+        writer.writeheader()
+        checked = 0
+        issues = 0
+        for row in reader:
+            writer.writerow({ru: row.get(en, "") for en, ru in CHECKED_COLUMNS.items()})
+            checked += 1
+            issues += bool(row.get("issues"))
+
     print(f"{SEQUENCE_DST.name}: {len(letters)} письма (лист «Цепочка писем»)")
     print(f"{EMAILS_DST.name}: {count} строк (лист «Готовые письма»)")
+    print(
+        f"{CHECKED_DST.name}: {checked} строк, из них с замечаниями {issues} "
+        "(лист «Задача 4 — проверка базы»)"
+    )
 
 
 if __name__ == "__main__":
