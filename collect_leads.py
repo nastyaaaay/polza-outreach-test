@@ -305,7 +305,66 @@ def generate_personalization(
     return ask_llm(client, system_prompt, user_prompt, stats)
 
 
-def extract_contact_name(client: httpx.Client, html_text: str, stats: dict | None = None) -> str:
+# Отчество опознаётся по окончанию. Нужно, чтобы понять, где в "Новицкий
+# Сергей Владимирович" собственно имя: в холодном письме "Привет, Новицкий
+# Сергей Владимирович!" звучит как повестка, а не как письмо человеку.
+_PATRONYMIC_RE = re.compile(
+    r"^[А-ЯЁ][а-яё]+(ович|евич|ьевич|овна|евна|ьевна|инична|ична)$"
+)
+
+
+def normalize_contact_name(name: str, personalization: str = "") -> str:
+    """Приводит найденное имя к форме, пригодной для обращения в письме.
+
+    Две проблемы, вылезшие при сборке реальных писем:
+
+    1. Модель берёт имя из портфолио. У Litera.Studio в контакт уехал
+       "Ильи Чируна" — владелец арт-галереи, ДЛЯ которой студия делала
+       открытки. Признак такого случая надёжный: имя дословно присутствует
+       в тексте персонализации, то есть взято из рассказа о клиентах, а не
+       из контактов компании. Такое имя выбрасываем — пустая колонка
+       честнее, чем письмо к чужому человеку.
+    2. ФИО целиком. Из "Фамилия Имя Отчество" для обращения нужно только
+       имя; отчество как раз и позволяет понять, какое слово именем является.
+
+    Возвращает пустую строку, если пригодного имени нет.
+    """
+    name = name.strip().strip(".\"'«»")
+    if not name:
+        return ""
+
+    words = name.split()
+    # Больше трёх слов — это уже не имя, а фраза ("контактное лицо не указано").
+    if not words or len(words) > 3:
+        return ""
+
+    # Имя из кейса или портфолио, а не контакт компании.
+    if personalization:
+        significant = [w for w in words if len(w) > 3]
+        if significant and any(w in personalization for w in significant):
+            return ""
+
+    # "Фамилия Имя Отчество" -> имя.
+    if len(words) == 3 and _PATRONYMIC_RE.match(words[2]):
+        return words[1]
+    # "Имя Отчество" -> имя: тон писем неформальный ("Привет, ..."),
+    # обращение по имени-отчеству в нём звучит чужеродно.
+    if len(words) == 2 and _PATRONYMIC_RE.match(words[1]):
+        return words[0]
+    # "Имя Фамилия" -> имя. Обратный порядок без отчества не отличить без
+    # словаря фамилий, поэтому берём первое слово: для распространённого
+    # "Имя Фамилия" это верно.
+    if len(words) == 2:
+        return words[0]
+    return words[0]
+
+
+def extract_contact_name(
+    client: httpx.Client,
+    html_text: str,
+    stats: dict | None = None,
+    personalization: str = "",
+) -> str:
     """Имя человека, к которому можно обратиться в письме, а не название
     компании. ТЗ требует колонку "имя" в базе, и цепочка писем обращается
     "{{имя}}" — без этой колонки шаблон физически не с чем смёржить.
@@ -313,19 +372,25 @@ def extract_contact_name(client: httpx.Client, html_text: str, stats: dict | Non
     Ищем только явно подписанное имя (директор, менеджер, контактное лицо)
     на странице "Контакты"/"О компании"/"Команда". Модели запрещено гадать:
     для большинства российских агентств такого имени на сайте просто нет,
-    и пустая строка здесь честнее выдуманного "Иван"."""
+    и пустая строка здесь честнее выдуманного "Иван". Результат дополнительно
+    проходит normalize_contact_name() — промпта одного оказалось мало.
+    """
     text = extract_context_text(html_text)
     if not text.strip():
         return ""
 
     system_prompt = (
         "На странице сайта компании иногда указано имя конкретного "
-        "человека (директор, менеджер по продажам, контактное лицо). "
-        "Ответь строго одной строкой:\n"
-        "ИМЯ: <имя> или ИМЯ: нет\n"
+        "сотрудника этой компании (директор, менеджер по продажам, "
+        "контактное лицо). Ответь строго одной строкой:\n"
+        "ИМЯ: <имя в именительном падеже> или ИМЯ: нет\n"
         "Пиши 'нет', если на странице нет явно подписанного имени "
-        "реального человека. Не выдумывай и не бери название компании, "
-        "бренда или домена за имя человека."
+        "сотрудника этой компании. Не выдумывай и не бери за имя "
+        "человека название компании, бренда или домена.\n"
+        "ВАЖНО: не бери имена людей из примеров работ, портфолио, кейсов, "
+        "отзывов, списка клиентов и партнёров — это чужие люди, а не "
+        "контакты этой компании. Если имя встречается только там, отвечай "
+        "'нет'."
     )
     user_prompt = f"Текст страницы:\n{text[:1200]}"
     answer = ask_llm(client, system_prompt, user_prompt, stats)
@@ -336,7 +401,7 @@ def extract_contact_name(client: httpx.Client, html_text: str, stats: dict | Non
     name = m.group(1).strip().strip(".\"'")
     if not name or re.match(r"(нет|no|none|неизвест)", name, re.IGNORECASE):
         return ""
-    return name[:40]
+    return normalize_contact_name(name[:40], personalization)
 
 
 def process_company(
@@ -383,14 +448,24 @@ def process_company(
             context = extract_context_text(contact_html)
             source_url = contact_url
 
-    contact_name = extract_contact_name(client, contact_html, stats) if contact_html else ""
+    # Персонализацию считаем раньше имени намеренно: она нужна как фильтр.
+    # Если найденное "имя контакта" дословно встречается в тексте
+    # персонализации — это имя из портфолио или отзыва, а не контакт
+    # компании (см. normalize_contact_name).
+    personalization = generate_personalization(client, name, context, stats)
+
+    contact_name = (
+        extract_contact_name(client, contact_html, stats, personalization)
+        if contact_html
+        else ""
+    )
     if not contact_name:
-        contact_name = extract_contact_name(client, home_html, stats)
+        contact_name = extract_contact_name(client, home_html, stats, personalization)
 
     row["email"] = email or ""
     row["contact_name"] = contact_name
     row["personalization_source"] = source_url if context else ""
-    row["personalization"] = generate_personalization(client, name, context, stats)
+    row["personalization"] = personalization
 
     return row
 
